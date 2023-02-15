@@ -11,6 +11,7 @@ use tracing::{error, info, warn, Level};
 extern "C" {
     pub fn run_pesc_sc(args: c_int, argsv: *const *const c_char) -> c_int;
     pub fn run_pesc_bulk(args: c_int, argsv: *const *const c_char) -> c_int;
+    pub fn run_pesc_sc_atac(args: c_int, argsv: *const *const c_char) -> c_int;
 }
 
 #[link(name = "build_static", kind = "static")]
@@ -155,6 +156,49 @@ enum Commands {
         #[arg(short, long)]
         output: String,
     },
+
+    /// map reads for single-cell processing
+    #[command(arg_required_else_help = true)]
+    MapSCAtac {
+        /// input index prefix
+        #[arg(short, long)]
+        index: String,
+
+        /// geometry of barcode, umi and read
+        #[arg(short, long)]
+        geometry: String,
+
+        /// path to list of read 1 files
+        #[arg(short = '1', long, value_delimiter = ',', required = true)]
+        read1: Vec<String>,
+
+        /// path to list of read 2
+        #[arg(short = '2', long, value_delimiter = ',', required = true)]
+        read2: Vec<String>,
+
+        /// path to list of barcode files
+        #[arg(short = 'b', long = "barcode_file", value_delimiter = ',', required = true)]
+        barcodes: Vec<String>,
+
+        /// number of threads to use
+        #[arg(short, long)]
+        threads: usize,
+
+        /// path to output directory
+        #[arg(short, long)]
+        output: String,
+
+        /// enable extra checking of the equivalence classes of k-mers that were too
+        /// ambiguous to be included in chaining (may improve specificity, but could slow down
+        /// mapping slightly).
+        #[arg(long)]
+        check_ambig_hits: bool,
+
+        /// determines the maximum cardinality equivalence class
+        /// (number of (txp, orientation status) pairs) to examine if performing check-ambig-hits.
+        #[arg(long, short, requires = "check_ambig_hits", default_value_t = 256)]
+        max_ec_card: u32,
+    }
 }
 
 fn main() -> Result<(), anyhow::Error> {
@@ -494,6 +538,70 @@ fn main() -> Result<(), anyhow::Error> {
             let args_len: c_int = args.len() as c_int;
 
             let map_ret = unsafe { run_pesc_bulk(args_len, arg_ptrs.as_ptr()) };
+            if map_ret != 0 {
+                bail!("mapper returned exit code {}; failure", map_ret);
+            }
+        }
+
+        Commands::MapSCAtac {
+            index,
+            geometry,
+            read1,
+            read2,
+            barcode_file: Vec<String>,
+            threads,
+            output,
+            check_ambig_hits,
+            max_ec_card,
+        } => {
+            let r1_string = read1.join(",");
+            let r2_string = read2.join(",");
+            let barcode_file_string = barcode_file.join(",");
+            let mut idx_suffixes: Vec<String> =
+                vec!["sshash".into(), "ctab".into(), "refinfo".into()];
+
+            let mut args: Vec<CString> = vec![
+                CString::new("sc_atac_mapper").unwrap(),
+                CString::new("-i").unwrap(),
+                CString::new(index.clone()).unwrap(),
+                CString::new("-g").unwrap(),
+                CString::new(geometry).unwrap(),
+                CString::new("-1").unwrap(),
+                CString::new(r1_string.as_str()).unwrap(),
+                CString::new("-2").unwrap(),
+                CString::new(r2_string.as_str()).unwrap(),
+                CString::new("-b").unwrap(),
+                CString::new(barcode_file_string.as_str()).unwrap(),
+                CString::new("-t").unwrap(),
+                CString::new(threads.to_string()).unwrap(),
+                CString::new("-o").unwrap(),
+                CString::new(output.as_str()).unwrap(),
+            ];
+
+            if check_ambig_hits {
+                args.push(CString::new("--check-ambig-hits").unwrap());
+                args.push(CString::new("--max-ec-card").unwrap());
+                args.push(CString::new(max_ec_card.to_string()).unwrap());
+                idx_suffixes.push("ectab".into());
+            }
+
+            let idx_path = PathBuf::from_str(&index)?;
+            for s in idx_suffixes {
+                let req_file = idx_path.with_extension(s);
+                if !req_file.exists() {
+                    bail!("To load the index with the specified prefix {}, piscem expects the file {} to exist, but it does not!", &index, req_file.display());
+                }
+            }
+
+            if quiet {
+                args.push(CString::new("--quiet").unwrap());
+            }
+
+            info!("cmd: {:?}", args);
+            let arg_ptrs: Vec<*const c_char> = args.iter().map(|s| s.as_ptr()).collect();
+            let args_len: c_int = args.len() as c_int;
+
+            let map_ret = unsafe { run_pesc_sc_atac(args_len, arg_ptrs.as_ptr()) };
             if map_ret != 0 {
                 bail!("mapper returned exit code {}; failure", map_ret);
             }
