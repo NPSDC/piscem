@@ -19,16 +19,72 @@ use std::io::{BufRead, BufReader, Read};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
+use indexmap::map::IndexMap;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct hit_info {
-    // chr: u32, // could be converted to u8, with a hashmap mapping u8 to chromosome name
-    chr: String,
+    chr: u32, // could be converted to u8, with a hashmap mapping u8 to chromosome name
     start: u32,
     end: u32,
-    barcode: String
-    // barcode: u64,
-    // rec_id: u32
+    barcode: needletail::bitkmer::BitKmerSeq
+    // rec_id: u64,
+}
+
+pub fn write_bed(hit_info_vec:&[hit_info],
+                bed_path:&Path,
+                chr_map:&IndexMap<String, u32>,
+                hm:&HashMap<u64, u64, ahash::RandomState>,
+                rev:&bool,
+                bc_len:&usize            
+            ) -> Result<(), Box<dyn std::error::Error>> {
+            
+        let mut writer = std::fs::File::create(bed_path)?;
+        let keys: Vec<_> = chr_map.keys().cloned().collect();
+        let chunk_size = 1000;
+        let mut chunk = 0;
+        let mut s = "".to_string() ;       
+        for i in 0..hit_info_vec.len() {
+            if chunk == chunk_size {
+                chunk = 0;
+            }
+            let chr_val = keys[hit_info_vec[i].chr as usize].clone();
+            let start = hit_info_vec[i].start;
+            let end = hit_info_vec[i].end;
+            let bc = hm.get(&hit_info_vec[i].barcode).unwrap();
+            let bc_string = get_bc_string(bc, rev, bc_len);
+            let s2 = [chr_val, start.to_string(), end.to_string(), bc_string].join("\t");
+            s.push_str(&s2);
+            s.push('\n');
+    
+            if chunk == chunk_size-1 {
+                writer.write_all(s.as_bytes()).unwrap();
+            }
+            chunk+=1;
+        }
+        Ok(())       
+}
+
+impl Ord for hit_info {
+    fn cmp(&self, other: &Self) -> cmp::Ordering {
+        if self.barcode != other.barcode {
+            self.barcode.cmp(&other.barcode)
+        } else if self.start != other.start {
+            self.start.cmp(&other.start)
+        } else {
+            self.end.cmp(&other.end)
+        }
+    }
+}
+impl PartialOrd for hit_info {
+    fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
+        if self.barcode != other.barcode {
+            Some(self.barcode.cmp(&other.barcode))
+        } else if self.start != other.start {
+            Some(self.start.cmp(&other.start))
+        } else {
+            Some(self.end.cmp(&other.end))
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -43,62 +99,112 @@ pub enum CellFilterMethod {
     UnfilteredExternalList(PathBuf, usize),
 }
 
+pub fn get_bc_string(kmerseq: &needletail::bitkmer::BitKmerSeq,
+    reverse_barcode: &bool,
+    bc_len: &usize
+) -> String {
+    let kmseq = *kmerseq;
+    let mut km: needletail::bitkmer::BitKmer = (kmseq, *bc_len as u8);
+    if *reverse_barcode {
+        km = needletail::bitkmer::reverse_complement(km);
+    }
+    let bytes = needletail::bitkmer::bitmer_to_bytes(km);
+    let seq:String = String::from_utf8(bytes).expect("Invalid barcode");
+    seq
+}
+
 pub fn update_barcode_hist_unfiltered(
     hist: &mut HashMap<u64, u64, ahash::RandomState>,
     unmatched_bc: &mut Vec<u64>,
     max_ambiguity_read: &mut usize,
+    reverse_barcode: &bool,
     hit: &String,
     prev_hits: &mut u32,
     first_inst: &mut bool,
     hit_info_vec: &mut Vec<hit_info>,
+    chr_map: &mut IndexMap<String, u32>,
+    chr_count: &mut u32,
+    uni_count: &mut u32,
+    mult_count: &mut u32,
 ) -> usize {
     let mut new_read = 0usize;
     let split_line: Vec<String> = hit.split_whitespace().map(|s| s.to_string()).collect();
     let num_hits = split_line[4].parse::<u32>().unwrap();
-
-    hit_info_vec.push(hit_info {
-        chr: split_line[0].clone(),
-        start: split_line[1].parse::<u32>().unwrap(),
-        end: split_line[2].parse::<u32>().unwrap(),
-        barcode: split_line[3].clone(),
-    });
+    let bc = &split_line[3].as_bytes();
+    let l = bc.len();
+    // need a way to get rid of unwrap
+    let mut km: needletail::bitkmer::BitKmer = needletail::bitkmer::BitNuclKmer::new(&bc[..], l as u8, false).next().unwrap().1;
+    if *reverse_barcode {
+        km = needletail::bitkmer::reverse_complement(km);
+    }
+    
+    // Making sure we only count the multimapping hit once
+    // If the number of hits in the prev record were 1, then current hit is the first one
     if *prev_hits == 1 {
         *first_inst = true;
+        if num_hits > 1 {
+            *mult_count += 1;
+        }
+        else {
+            *uni_count += 1;
+        }
     }
+    // If the number of prev hits equal to current total, then
+    // next hit will be the first one
     if *prev_hits == num_hits {
         *prev_hits = 1;
     } else {
         *prev_hits += 1;
     }
+
+    let mut rec_id:i64 = -1;
+    let mut prev_rec_id:i64 = -1;
+    let nrecs = hit_info_vec.len();
+
+    // if nrecs > 1 {
+    //     prev_rec_id = hit_info_vec[nrecs-1].rec_id as i64;
+    // }
     if *first_inst {
         if num_hits > 1 {
             *first_inst = false;
             *max_ambiguity_read = (num_hits as usize).max(*max_ambiguity_read);
         }
-        let bc = &split_line[3].as_bytes();
-        let l = bc.len();
-        if let Some((_, km, _)) =
-            needletail::bitkmer::BitNuclKmer::new(&bc[..], l as u8, false).next()
-        {
-            let rc = needletail::bitkmer::reverse_complement(km);
-            match hist.get_mut(&rc.0) {
+        // rec_id = prev_rec_id + 1; 
+        // if let Some((_, km, _)) =
+        //     needletail::bitkmer::BitNuclKmer::new(&bc[..], l as u8, false).next()
+        // {
+        //     let rc = needletail::bitkmer::reverse_complement(km);
+        match hist.get_mut(&km.0) {
             // match hist.get_mut(&km.0) {
-                Some(c) => *c += 1,
-                None => {
-                    // match hist.get_mut(&rc.0) {
-                    //     Some(c) => *c += 1,
-                    //     None => {
-                            // unmatched_bc.push(km.0);
-                            unmatched_bc.push(rc.0);
-                    //     }
-                    // }
-                }
-            }
-            new_read = 1;
+            Some(c) => *c += 1,
+            None => {
+                unmatched_bc.push(km.0);
+            } // }
         }
+        new_read = 1;
     } else {
         new_read = 0;
+        rec_id = prev_rec_id;
     }
+    let chr_s = split_line[0].clone();
+    let mut chr = *chr_count;
+    if chr_map.contains_key(&chr_s) {
+        chr = *chr_map.get(&chr_s).unwrap();
+    }
+    else {
+        chr_map.insert(chr_s.clone(), chr);
+        *chr_count += 1;
+    }
+
+    if num_hits == 1{
+        hit_info_vec.push(hit_info{
+            chr: chr,
+            start: split_line[1].parse::<u32>().unwrap(),
+            end: split_line[2].parse::<u32>().unwrap(),
+            barcode: km.0             
+        });
+    }
+
     new_read
 }
 
@@ -136,7 +242,7 @@ fn populate_unfiltered_barcode_map<T: Read>(
 }
 
 fn process_unfiltered(
-    mut hm: HashMap<u64, u64, ahash::RandomState>,
+    mut hm: &mut HashMap<u64, u64, ahash::RandomState>,
     mut unmatched_bc: Vec<u64>,
     bc_len: &usize,
     filter_meth: &CellFilterMethod,
@@ -375,6 +481,7 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
 
     let mut first_bclen = 0usize;
     let mut unfiltered_bc_counts = None;
+    let rc = true; // reverse complement barcode
     if let CellFilterMethod::UnfilteredExternalList(fname, _) = &filter_meth {
         let i_file = File::open(fname).context("could not open input file")?;
         let br = BufReader::new(i_file);
@@ -404,6 +511,11 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
     let mut hit_info_vec = Vec::<hit_info>::new();
     let mut ff = 0;
     let mut prev_hits: u32 = 1;
+    let mut uni_count: u32 = 0;
+    let mut multi_count: u32 = 0;
+    let mut chr_count: u32 = 0;
+    let mut chr_map:IndexMap<String, u32> = IndexMap::new();
+    
     match filter_meth {
         CellFilterMethod::UnfilteredExternalList(_, _min_reads) => {
             unmatched_bc = Vec::with_capacity(10000000);
@@ -418,15 +530,22 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
                         &mut hmu,
                         &mut unmatched_bc,
                         &mut max_ambiguity_read,
+                        &rc,
                         &l,
                         &mut prev_hits,
                         &mut first_inst,
                         &mut hit_info_vec,
+                        &mut chr_map,
+                        &mut chr_count,
+                        &mut uni_count,
+                        &mut multi_count
                     );
                     // num_reads += c.reads.len();
                 }
                 let unmatched_duration = start_unmatched_time.elapsed();
                 println!("{:?}", unmatched_duration);
+                println!("{:?}", hit_info_vec.len());
+                println!("{:?}", hit_info_vec[10000]);
                 let l = unmatched_bc.len();
                 info!(
                     log,
@@ -436,8 +555,16 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
                     // hdr.num_chunks.to_formatted_string(&Locale::en),
                     max_ambiguity_read.to_formatted_string(&Locale::en)
                 );
-                process_unfiltered(
-                    hmu,
+                info!(
+                    log,
+                    "uni_count {} --- multi_count {} --- chr_count {}",
+                    uni_count.to_formatted_string(&Locale::en),
+                    multi_count.to_formatted_string(&Locale::en),
+                    // hdr.num_chunks.to_formatted_string(&Locale::en),
+                    chr_count.to_formatted_string(&Locale::en)
+                );
+                let corr = process_unfiltered(
+                    &mut hmu,
                     unmatched_bc,
                     &first_bclen,
                     &filter_meth,
@@ -446,7 +573,15 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
                     cmdline,
                     log,
                     &gpl_opts,
-                )
+                );
+                info!(log, "sorting");
+                let hh = &mut hit_info_vec[0..100];
+                hh.sort_unstable();
+                info!(log, "done sorting");
+                let parent = std::path::Path::new(output_dir);
+                let sorted_out_bed = parent.join("sorted_map.bed");
+                let _=write_bed(&hh, &sorted_out_bed, &chr_map, &hmu, &rc, &first_bclen);
+                corr
             } else {
                 Ok(0)
             }
