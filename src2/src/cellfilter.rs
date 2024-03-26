@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 use indexmap::map::IndexMap;
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub struct hit_info {
     chr: u32, // could be converted to u8, with a hashmap mapping u8 to chromosome name
     start: u32,
@@ -40,23 +40,24 @@ pub fn write_bed(hit_info_vec:&[hit_info],
             
         let mut writer = std::fs::File::create(bed_path)?;
         let keys: Vec<_> = chr_map.keys().cloned().collect();
-        let chunk_size = 1000;
+        let chunk_size = if hit_info_vec.len() > 100000 {100000} else {hit_info_vec.len()};
         let mut chunk = 0;
         let mut s = "".to_string() ;       
         for i in 0..hit_info_vec.len() {
             if chunk == chunk_size {
                 chunk = 0;
+                s = "".to_string();
             }
             let chr_val = keys[hit_info_vec[i].chr as usize].clone();
             let start = hit_info_vec[i].start;
             let end = hit_info_vec[i].end;
             let bc = hm.get(&hit_info_vec[i].barcode).unwrap();
             let bc_string = get_bc_string(bc, rev, bc_len);
-            let s2 = [chr_val, start.to_string(), end.to_string(), bc_string].join("\t");
+            let s2 = [chr_val, start.to_string(), end.to_string(), bc_string, "1".to_string()].join("\t");
             s.push_str(&s2);
             s.push('\n');
-    
-            if chunk == chunk_size-1 {
+            if (chunk == chunk_size-1) || (i==(hit_info_vec.len()-1)) {
+                // println!("{:?}", &s);
                 writer.write_all(s.as_bytes()).unwrap();
             }
             chunk+=1;
@@ -66,23 +67,23 @@ pub fn write_bed(hit_info_vec:&[hit_info],
 
 impl Ord for hit_info {
     fn cmp(&self, other: &Self) -> cmp::Ordering {
-        if self.barcode != other.barcode {
-            self.barcode.cmp(&other.barcode)
-        } else if self.start != other.start {
+        if self.start != other.start {
             self.start.cmp(&other.start)
-        } else {
+        } else if self.end != other.end {
             self.end.cmp(&other.end)
+        } else {
+            self.barcode.cmp(&other.barcode)
         }
     }
 }
 impl PartialOrd for hit_info {
     fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
-        if self.barcode != other.barcode {
-            Some(self.barcode.cmp(&other.barcode))
-        } else if self.start != other.start {
+        if self.start != other.start {
             Some(self.start.cmp(&other.start))
-        } else {
+        } else if self.end != other.end {
             Some(self.end.cmp(&other.end))
+        } else {
+            Some(self.barcode.cmp(&other.barcode))
         }
     }
 }
@@ -121,9 +122,6 @@ pub fn update_barcode_hist_unfiltered(
     hit: &String,
     prev_hits: &mut u32,
     first_inst: &mut bool,
-    hit_info_vec: &mut Vec<hit_info>,
-    chr_map: &mut IndexMap<String, u32>,
-    chr_count: &mut u32,
     uni_count: &mut u32,
     mult_count: &mut u32,
 ) -> usize {
@@ -157,9 +155,7 @@ pub fn update_barcode_hist_unfiltered(
         *prev_hits += 1;
     }
 
-    let mut rec_id:i64 = -1;
-    let mut prev_rec_id:i64 = -1;
-    let nrecs = hit_info_vec.len();
+
 
     // if nrecs > 1 {
     //     prev_rec_id = hit_info_vec[nrecs-1].rec_id as i64;
@@ -184,25 +180,6 @@ pub fn update_barcode_hist_unfiltered(
         new_read = 1;
     } else {
         new_read = 0;
-        rec_id = prev_rec_id;
-    }
-    let chr_s = split_line[0].clone();
-    let mut chr = *chr_count;
-    if chr_map.contains_key(&chr_s) {
-        chr = *chr_map.get(&chr_s).unwrap();
-    }
-    else {
-        chr_map.insert(chr_s.clone(), chr);
-        *chr_count += 1;
-    }
-
-    if num_hits == 1{
-        hit_info_vec.push(hit_info{
-            chr: chr,
-            start: split_line[1].parse::<u32>().unwrap(),
-            end: split_line[2].parse::<u32>().unwrap(),
-            barcode: km.0             
-        });
     }
 
     new_read
@@ -457,6 +434,49 @@ fn process_unfiltered(
     Ok(num_corrected)
 }
 
+pub fn update_hit_vec(hit: &String,
+    hit_info_vec: &mut Vec<hit_info>,
+    hist: &mut HashMap<u64, u64, ahash::RandomState>,
+    chr_map: &mut IndexMap<String, u32>,
+    chr_count: &mut u32,
+    first_inst: &bool,
+    num_hits: &mut u16,
+    rc: &bool
+) -> bool {
+    if !first_inst {
+        return false;
+    }
+    let split_line: Vec<String> = hit.split_whitespace().map(|s| s.to_string()).collect();
+    *num_hits = split_line[4].parse::<u16>().unwrap();
+    let bc = &split_line[3].as_bytes();
+    let l = bc.len();
+    let mut km: needletail::bitkmer::BitKmer = needletail::bitkmer::BitNuclKmer::new(&bc[..], l as u8, false).next().unwrap().1;
+    if *rc {
+        km = needletail::bitkmer::reverse_complement(km);
+    }
+    if hist.contains_key(&km.0) {
+        let chr_s = split_line[0].clone();
+        let mut chr = *chr_count;
+        if chr_map.contains_key(&chr_s) {
+            chr = *chr_map.get(&chr_s).unwrap();
+        }
+        else {
+            chr_map.insert(chr_s.clone(), chr);
+            *chr_count += 1;
+        }
+        // only add if the kmer exists
+        if *num_hits == 1 {
+            hit_info_vec.push(hit_info{
+                chr: chr,
+                start: split_line[1].parse::<u32>().unwrap(),
+                end: split_line[2].parse::<u32>().unwrap(),
+                barcode: km.0
+            });
+        }
+        return true;
+    }
+    return false;
+}
 pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> {
     let bed_dir = gpl_opts.input_dir;
     let output_dir = gpl_opts.output_dir;
@@ -508,8 +528,8 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
     let mut max_ambiguity_read = 0usize;
     // Tracking if a unique or a multihit
     let mut first_inst = true;
-    let mut hit_info_vec = Vec::<hit_info>::new();
-    let mut ff = 0;
+    let mut hit_info_vec:Vec<hit_info> = Vec::with_capacity(10000000);
+    
     let mut prev_hits: u32 = 1;
     let mut uni_count: u32 = 0;
     let mut multi_count: u32 = 0;
@@ -525,7 +545,6 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
                 let start_unmatched_time = Instant::now();
                 for l in br.lines() {
                     let l = l?;
-                    ff += 1;
                     num_reads += update_barcode_hist_unfiltered(
                         &mut hmu,
                         &mut unmatched_bc,
@@ -534,9 +553,6 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
                         &l,
                         &mut prev_hits,
                         &mut first_inst,
-                        &mut hit_info_vec,
-                        &mut chr_map,
-                        &mut chr_count,
                         &mut uni_count,
                         &mut multi_count
                     );
@@ -544,8 +560,6 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
                 }
                 let unmatched_duration = start_unmatched_time.elapsed();
                 println!("{:?}", unmatched_duration);
-                println!("{:?}", hit_info_vec.len());
-                println!("{:?}", hit_info_vec[10000]);
                 let l = unmatched_bc.len();
                 info!(
                     log,
@@ -574,13 +588,101 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
                     log,
                     &gpl_opts,
                 );
+                let i_file = File::open(i_dir.join("map.bed")).context("could not open input bed file")?;
+                let br = BufReader::new(i_file);
+                let mut num_hits:u16=1;
+                let mut first_inst:bool=true;
+                
+                let mut unmatched_bc = 0;
+                let mut unmatched_bc_multi = 0;
+                let mut unmatched_bc_total:u64 = 0;
+                let mut matched_bc = 0;
+                let mut matched_bc_multi = 0;
+                let mut matched_bc_total:u64 = 0;
+                
+                info!(
+                    log, "Pass 2 after correction of barcode"
+                );
+                for l in br.lines() {
+                    if num_hits == 1 {
+                        first_inst = true;
+                    }
+                    if num_hits > 1 {
+                        first_inst = false;
+                        num_hits -= 1;
+                        continue;
+                    }
+                    let l = l?;
+                    let k_exists = update_hit_vec(&l,
+                        &mut hit_info_vec,
+                        &mut hmu,
+                        &mut chr_map,
+                        &mut chr_count,
+                        &first_inst,
+                        &mut num_hits,
+                        &rc
+                    );
+                    if ! k_exists {
+                        unmatched_bc += 1;
+                        unmatched_bc_total += num_hits as u64;
+                        if num_hits > 1 {
+                            unmatched_bc_multi += 1;
+                        }
+                    }
+                    else {
+                        matched_bc += 1;
+                        matched_bc_total += num_hits as u64;
+                        if num_hits > 1 {
+                            matched_bc_multi += 1;
+                        }
+                    }
+                }
+                info!(
+                    log, 
+                    "unmatched_barcode_count {} --- unmatched_barcode_multi {} --- unmatched_barcode_total {}",
+                    unmatched_bc.to_formatted_string(&Locale::en),
+                    unmatched_bc_multi.to_formatted_string(&Locale::en),
+                    unmatched_bc_total.to_formatted_string(&Locale::en),
+                );
+                info!(
+                    log, 
+                    "matched_barcode_count {} --- matched_barcode_multi {} --- matched_barcode_total {}",
+                    matched_bc.to_formatted_string(&Locale::en),
+                    matched_bc_multi.to_formatted_string(&Locale::en),
+                    matched_bc_total.to_formatted_string(&Locale::en),
+                );
+                info!(
+                    log, 
+                    "length of hit vector {}",
+                    hit_info_vec.len().to_formatted_string(&Locale::en)
+                );
+                // to do
+                // sort hit_info_vec
+                // deduplication
+                // --- compare if two vectors are equal
+                // --- add it to a different vector
+
+                // test sort and write
+                // -- break it down further multiple of chunk or not
+
                 info!(log, "sorting");
-                let hh = &mut hit_info_vec[0..100];
-                hh.sort_unstable();
+                hit_info_vec.sort_unstable();
+                let mut h_updated:Vec<hit_info> = Vec::with_capacity(hit_info_vec.len()/2);
+                // println!("{:?}", hh);
+                
                 info!(log, "done sorting");
+                
+                for (count, hv) in hit_info_vec.iter().dedup_with_count() {
+                    // if count > 1 {
+                    //     println!("{} {:?}", count, hv);
+                    // }
+                    h_updated.push(*hv);
+                }
+                info!(log, 
+                    "length after deduplication {}", h_updated.len().to_formatted_string(&Locale::en));
                 let parent = std::path::Path::new(output_dir);
                 let sorted_out_bed = parent.join("sorted_map.bed");
-                let _=write_bed(&hh, &sorted_out_bed, &chr_map, &hmu, &rc, &first_bclen);
+                let _ = write_bed(&h_updated, &sorted_out_bed, &chr_map, &hmu, &rc, &first_bclen);
                 corr
             } else {
                 Ok(0)
