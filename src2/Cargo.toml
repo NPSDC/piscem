@@ -16,10 +16,10 @@ include = [
 
 [dependencies]
 anyhow = "1.0"
-clap = { version = "4.1.1", features = ["cargo", "derive", "env", "wrap_help"] }
+clap = { version = "=4.5.2", features = ["derive", "wrap_help", "cargo", "help", "usage", "string", "error-context"] }
 tracing = "0.1.37"
 tracing-subscriber = { version = "0.3.16", default-features = true, features = ["env-filter"] }
-libradicl = { git = "https://github.com/COMBINE-lab/libradicl", branch = "develop", version = "0.8.1" }
+libradicl = { git = "https://github.com/NPSDC/libradicl", branch = "atac_dev", version = "0.8.1" }
 ahash = "0.8.3"
 bstr = "1.5.0"
 bincode = "1.3.3"
@@ -38,3 +38,4 @@ needletail = "0.5.1"
 csv = "1.3.0"
 thiserror = "1.0.57"
 flate2 = "1.0.28"
+indexmap = "2.2.5"
