@@ -7,6 +7,7 @@ use itertools::Itertools;
 use libradicl::exit_codes;
 use libradicl::rad_types::{self, RadType};
 use libradicl::BarcodeLookupMap;
+use libradicl::utils::has_data_left;
 use libradicl::{
     chunk,
     header::RadPrelude,
@@ -20,7 +21,7 @@ use slog::info;
 use std::cmp;
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{BufReader, Read};
+use std::io::{BufRead, BufReader, Read};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -185,9 +186,6 @@ fn populate_unfiltered_barcode_map<T: Read>(
             } else {
                 hm.insert(km.0, 0);
             }
-            // let rc = needletail::bitkmer::reverse_complement(km);
-
-            // hm.insert(rc.0, 0);
         }
     }
     hm
@@ -490,6 +488,7 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
     let mut unfiltered_bc_counts = None;
 
     if let CellFilterMethod::UnfilteredExternalList(fname, _) = &filter_meth {
+        println!("{} Fname", fname.display());
         let i_file = File::open(fname).context("could not open input file")?;
         let br = BufReader::new(i_file);
         unfiltered_bc_counts = Some(populate_unfiltered_barcode_map(br, &mut first_bclen, rc));
@@ -570,7 +569,7 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
             unmatched_bc = Vec::with_capacity(10000000);
             // the unfiltered_bc_count map must be valid in this branch
             if let Some(mut hmu) = unfiltered_bc_counts {
-                for _ in 0..(hdr.num_chunks as usize) {
+                while has_data_left(&mut br).expect("encountered error reading input file") {
                     let c = chunk::Chunk::<AtacSeqReadRecord>::from_bytes(&mut br, &record_context);
                     num_orientation_compat_reads += update_barcode_hist_unfiltered(
                         &mut hmu,

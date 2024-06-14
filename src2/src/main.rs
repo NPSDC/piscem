@@ -26,23 +26,27 @@ fn main() -> anyhow::Result<()> {
         .arg(arg!(-i --input <INPUT>  "input directory containing the map.bed BED file")
             .required(true)
             .value_parser(pathbuf_directory_exists_validator))
-        .arg(arg!(-o --"output-dir" <OUTPUTDIR>  "output directory").required(true).value_parser(value_parser!(PathBuf)))
+        .arg(arg!(-o --"output-dir" <OUTPUTDIR>  "output directory")
+            .required(true)
+            .value_parser(value_parser!(PathBuf))
+        )
         .arg(
             arg!(-u --"unfiltered-pl" <UNFILTEREDPL> "uses an unfiltered external permit list")
             .value_parser(pathbuf_file_exists_validator)
         )
         .group(ArgGroup::new("filter-method")
-            .args(["knee-distance", "expect-cells", "force-cells", "valid-bc", "unfiltered-pl"])
+            .args(["unfiltered-pl"])
             .required(true)
             )
         .arg(
             arg!(-m --"min-reads" <MINREADS> "minimum read count threshold; only used with --unfiltered-pl")
             .value_parser(value_parser!(usize))
-            .default_value("10"));
-        // .arg(
-        //     arg!(-r --"rev-comp" <reverse complement> "reverse complement")
-        //     .value_parser(value_parser!(bool))
-        //     .default_value(true));
+            .default_value("10"))
+        .arg(
+            arg!(-r --"rev-comp" <REVERSECOMPLEMENT> "reverse complement")
+            .value_parser(clap::builder::BoolishValueParser::new())
+            .default_value("true")
+        );
 
 
     let opts = Command::new("piscem-atac")
@@ -54,57 +58,58 @@ fn main() -> anyhow::Result<()> {
         .subcommand(gen_app)
         .get_matches();
 
-    // let decorator = slog_term::TermDecorator::new().build();
-    // let drain = slog_term::CompactFormat::new(decorator)
-    //     .use_custom_timestamp(|out: &mut dyn std::io::Write| {
-    //         write!(out, "{}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S")).unwrap();
-    //         Ok(())
-    //     })
-    //     .build()
-    //     .fuse();
-    // let drain = slog_async::Async::new(drain).build().fuse();
-    // let log = slog::Logger::root(drain, o!());
+    let decorator = slog_term::TermDecorator::new().build();
+    let drain = slog_term::CompactFormat::new(decorator)
+        .use_custom_timestamp(|out: &mut dyn std::io::Write| {
+            write!(out, "{}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S")).unwrap();
+            Ok(())
+        })
+        .build()
+        .fuse();
+    let drain = slog_async::Async::new(drain).build().fuse();
+    let log = slog::Logger::root(drain, o!());
 
-    // if let Some(t) = opts.subcommand_matches("generate-permit-list") {
-    //     let input_dir: &PathBuf = t.get_one("input").expect("no input directory specified");
-    //     let output_dir: &PathBuf = t
-    //         .get_one("output-dir")
-    //         .expect("no output directory specified");
-    //     let mut fmeth = CellFilterMethod::KneeFinding;
-    //     if let Some(v) = t.get_one::<PathBuf>("unfiltered-pl") {
-    //         let min_reads: usize = *t
-    //             .get_one("min-reads")
-    //             .expect("min-reads must be a valid integer");
-    //         if min_reads < 1 {
-    //             crit!(
-    //                 log,
-    //                 "min-reads < 1 is not supported, the value {} was provided",
-    //                 min_reads
-    //             );
-    //             std::process::exit(1);
-    //         }
-    //         fmeth = CellFilterMethod::UnfilteredExternalList(v.clone(), min_reads);
-    //     };
-    //     let rc: bool = *t.get_one("rc").expect("reverse comp must be boolean");
+    if let Some(t) = opts.subcommand_matches("generate-permit-list") {
+        let input_dir: &PathBuf = t.get_one("input").expect("no input directory specified");
+        let output_dir: &PathBuf = t
+            .get_one("output-dir")
+            .expect("no output directory specified");
+        let mut fmeth = CellFilterMethod::KneeFinding;
 
-    //     let gpl_opts = GenPermitListOpts::builder()
-    //         .input_dir(input_dir)
-    //         .output_dir(output_dir)
-    //         .fmeth(fmeth)
-    //         .rc(rc)
-    //         .version(VERSION)
-    //         .cmdline(&cmdline)
-    //         .log(&log)
-    //         .build();
+        if let Some(v) = t.get_one::<PathBuf>("unfiltered-pl") {
+            let min_reads: usize = *t
+                .get_one("min-reads")
+                .expect("min-reads must be a valid integer");
+            if min_reads < 1 {
+                crit!(
+                    log,
+                    "min-reads < 1 is not supported, the value {} was provided",
+                    min_reads
+                );
+                std::process::exit(1);
+            }
+            fmeth = CellFilterMethod::UnfilteredExternalList(v.clone(), min_reads);
+        };
+        let rc: bool = *t.get_one("rev-comp").expect("reverse comp must be boolean");
 
-    //     match generate_permit_list(gpl_opts) {
-    //         Ok(0) => {
-    //             warn!(log, "found 0 corrected barcodes; please check the input.");
-    //         }
-    //         Err(e) => return Err(e),
-    //         _ => (),
-    //     };
-    // }
+        let gpl_opts = GenPermitListOpts::builder()
+            .input_dir(input_dir)
+            .output_dir(output_dir)
+            .fmeth(fmeth)
+            .rc(rc)
+            .version(VERSION)
+            .cmdline(&cmdline)
+            .log(&log)
+            .build();
+
+        match generate_permit_list(gpl_opts) {
+            Ok(0) => {
+                warn!(log, "found 0 corrected barcodes; please check the input.");
+            }
+            Err(e) => return Err(e),
+            _ => (),
+        };
+    }
 
     Ok(())
 }
