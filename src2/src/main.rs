@@ -8,12 +8,14 @@ use piscem_atac::cellfilter::{generate_permit_list, CellFilterMethod};
 use piscem_atac::cmd_parse_utils::{
     pathbuf_directory_exists_validator, pathbuf_file_exists_validator,
 };
+use piscem_atac::collate::collate;
 use piscem_atac::prog_opts::GenPermitListOpts;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn main() -> anyhow::Result<()> {
     let num_hardware_threads = num_cpus::get() as u32;
     let max_num_threads: String = (num_cpus::get() as u32).to_string();
+    let max_num_collate_threads: String = (16_u32.min(num_hardware_threads).max(2_u32)).to_string();
 
     let crate_authors = crate_authors!("\n");
     let version = crate_version!();
@@ -48,6 +50,21 @@ fn main() -> anyhow::Result<()> {
             .default_value("true")
         );
 
+    let collate_app = Command::new("collate")
+        .about("Collate a RAD file by corrected cell barcode")
+        .version(version)
+        .author(crate_authors)
+        .arg(arg!(-i --"input-dir" <INPUTDIR> "input directory made by generate-permit-list")
+            .required(true)
+            .value_parser(pathbuf_directory_exists_validator))
+        .arg(arg!(-r --"rad-dir" <RADFILE> "the directory containing the RAD file to be collated")
+            .required(true)
+            .value_parser(pathbuf_directory_exists_validator))
+        .arg(arg!(-t --threads <THREADS> "number of threads to use for processing").value_parser(value_parser!(u32)).default_value(max_num_collate_threads))
+        .arg(arg!(-c --compress "compress the output collated RAD file"))
+        .arg(arg!(-m --"max-records" <MAXRECORDS> "the maximum number of read records to keep in memory at once")
+             .value_parser(value_parser!(u32))
+             .default_value("30000000"));
 
     let opts = Command::new("piscem-atac")
         .subcommand_required(true)
@@ -56,6 +73,7 @@ fn main() -> anyhow::Result<()> {
         .author(crate_authors)
         .about("Process RAD files from the command line")
         .subcommand(gen_app)
+        .subcommand(collate_app)
         .get_matches();
 
     let decorator = slog_term::TermDecorator::new().build();
@@ -111,5 +129,23 @@ fn main() -> anyhow::Result<()> {
         };
     }
 
+    if let Some(t) = opts.subcommand_matches("collate") {
+        let input_dir: &PathBuf = t.get_one("input-dir").unwrap();
+        let rad_dir: &PathBuf = t.get_one("rad-dir").unwrap();
+        let num_threads = *t.get_one("threads").unwrap();
+        let compress_out = t.get_flag("compress");
+        let max_records: u32 = *t.get_one("max-records").unwrap();
+        collate(
+            input_dir,
+            rad_dir,
+            num_threads,
+            max_records,
+            compress_out,
+            &cmdline,
+            VERSION,
+            &log,
+        )
+        .expect("could not collate.");
+    }
     Ok(())
 }

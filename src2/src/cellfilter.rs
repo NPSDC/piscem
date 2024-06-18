@@ -2,12 +2,12 @@ use crate::prog_opts::GenPermitListOpts;
 use crate::utils as afutils;
 use anyhow::{anyhow, Context};
 use bstr::io::BufReadExt;
-use indexmap::map::IndexMap;
+// use indexmap::map::IndexMap;
 use itertools::Itertools;
 use libradicl::exit_codes;
 use libradicl::rad_types::{self, RadType};
-use libradicl::BarcodeLookupMap;
 use libradicl::utils::has_data_left;
+use libradicl::BarcodeLookupMap;
 use libradicl::{
     chunk,
     header::RadPrelude,
@@ -34,51 +34,51 @@ pub struct hit_info {
     barcode: needletail::bitkmer::BitKmerSeq, // rec_id: u64,
 }
 
-pub fn write_bed(
-    hit_info_vec: &[hit_info],
-    bed_path: &Path,
-    chr_map: &IndexMap<String, u32>,
-    hm: &HashMap<u64, u64, ahash::RandomState>,
-    rev: &bool,
-    bc_len: &usize,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let mut writer = std::fs::File::create(bed_path)?;
-    let keys: Vec<_> = chr_map.keys().cloned().collect();
-    let chunk_size = if hit_info_vec.len() > 100000 {
-        100000
-    } else {
-        hit_info_vec.len()
-    };
-    let mut chunk = 0;
-    let mut s = "".to_string();
-    for i in 0..hit_info_vec.len() {
-        if chunk == chunk_size {
-            chunk = 0;
-            s = "".to_string();
-        }
-        let chr_val = keys[hit_info_vec[i].chr as usize].clone();
-        let start = hit_info_vec[i].start;
-        let end = hit_info_vec[i].end;
-        let bc = hm.get(&hit_info_vec[i].barcode).unwrap();
-        let bc_string = get_bc_string(bc, rev, bc_len);
-        let s2 = [
-            chr_val,
-            start.to_string(),
-            end.to_string(),
-            bc_string,
-            "1".to_string(),
-        ]
-        .join("\t");
-        s.push_str(&s2);
-        s.push('\n');
-        if (chunk == chunk_size - 1) || (i == (hit_info_vec.len() - 1)) {
-            // println!("{:?}", &s);
-            writer.write_all(s.as_bytes()).unwrap();
-        }
-        chunk += 1;
-    }
-    Ok(())
-}
+// pub fn write_bed(
+//     hit_info_vec: &[hit_info],
+//     bed_path: &Path,
+//     chr_map: &IndexMap<String, u32>,
+//     hm: &HashMap<u64, u64, ahash::RandomState>,
+//     rev: &bool,
+//     bc_len: &usize,
+// ) -> Result<(), Box<dyn std::error::Error>> {
+//     let mut writer = std::fs::File::create(bed_path)?;
+//     let keys: Vec<_> = chr_map.keys().cloned().collect();
+//     let chunk_size = if hit_info_vec.len() > 100000 {
+//         100000
+//     } else {
+//         hit_info_vec.len()
+//     };
+//     let mut chunk = 0;
+//     let mut s = "".to_string();
+//     for i in 0..hit_info_vec.len() {
+//         if chunk == chunk_size {
+//             chunk = 0;
+//             s = "".to_string();
+//         }
+//         let chr_val = keys[hit_info_vec[i].chr as usize].clone();
+//         let start = hit_info_vec[i].start;
+//         let end = hit_info_vec[i].end;
+//         let bc = hm.get(&hit_info_vec[i].barcode).unwrap();
+//         let bc_string = get_bc_string(bc, rev, bc_len);
+//         let s2 = [
+//             chr_val,
+//             start.to_string(),
+//             end.to_string(),
+//             bc_string,
+//             "1".to_string(),
+//         ]
+//         .join("\t");
+//         s.push_str(&s2);
+//         s.push('\n');
+//         if (chunk == chunk_size - 1) || (i == (hit_info_vec.len() - 1)) {
+//             // println!("{:?}", &s);
+//             writer.write_all(s.as_bytes()).unwrap();
+//         }
+//         chunk += 1;
+//     }
+//     Ok(())
+// }
 
 impl Ord for hit_info {
     fn cmp(&self, other: &Self) -> cmp::Ordering {
@@ -200,6 +200,7 @@ fn process_unfiltered(
     output_dir: &PathBuf,
     version: &str,
     max_ambiguity_read: usize,
+    num_chunks: u32,
     cmdline: &str,
     log: &slog::Logger,
     gpl_opts: &GenPermitListOpts,
@@ -390,6 +391,7 @@ fn process_unfiltered(
     let meta_info = json!({
     "version_str" : version,
     "max-ambig-record" : max_ambiguity_read,
+    "num-chunks" : num_chunks,
     "cmd" : cmdline,
     "permit-list-type" : "unfiltered",
     "gpl_options" : &gpl_opts
@@ -469,6 +471,7 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
     let cmdline = gpl_opts.cmdline;
     let log = gpl_opts.log;
     let rc = gpl_opts.rc;
+    let mut num_chunks = 0;
 
     let i_dir = std::path::Path::new(&rad_dir);
 
@@ -568,6 +571,7 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
         CellFilterMethod::UnfilteredExternalList(_, _min_reads) => {
             unmatched_bc = Vec::with_capacity(10000000);
             // the unfiltered_bc_count map must be valid in this branch
+
             if let Some(mut hmu) = unfiltered_bc_counts {
                 while has_data_left(&mut br).expect("encountered error reading input file") {
                     let c = chunk::Chunk::<AtacSeqReadRecord>::from_bytes(&mut br, &record_context);
@@ -577,6 +581,7 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
                         &mut max_ambiguity_read,
                         &c,
                     );
+                    num_chunks += 1;
                     num_reads += c.reads.len();
                 }
                 info!(
@@ -584,7 +589,7 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
                     "observed {} reads ({} orientation consistent) in {} chunks --- max ambiguity read occurs in {} refs",
                     num_reads.to_formatted_string(&Locale::en),
                     num_orientation_compat_reads.to_formatted_string(&Locale::en),
-                    hdr.num_chunks.to_formatted_string(&Locale::en),
+                    num_chunks.to_formatted_string(&Locale::en),
                     max_ambiguity_read.to_formatted_string(&Locale::en)
                 );
                 process_unfiltered(
@@ -595,6 +600,7 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
                     output_dir,
                     version,
                     max_ambiguity_read,
+                    num_chunks,
                     cmdline,
                     log,
                     &gpl_opts,
