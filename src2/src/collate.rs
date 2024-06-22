@@ -13,14 +13,12 @@ use slog::{crit, info};
 //use anyhow::{anyhow, Result};
 use crate::constants as afconst;
 use crate::utils::InternalVersionInfo;
-use bio_types::strand::{Strand, StrandError};
 use crossbeam_queue::ArrayQueue;
 // use dashmap::DashMap;
 
 use libradicl::chunk;
 use libradicl::header::{RadHeader, RadPrelude};
 use libradicl::rad_types;
-use libradicl::record::AlevinFryReadRecord;
 use libradicl::record::AtacSeqReadRecord;
 use libradicl::schema::TempCellInfo;
 
@@ -167,19 +165,6 @@ where
     }*/
 }
 
-fn get_orientation(mdata: &serde_json::Value) -> Result<Strand, StrandError> {
-    // next line is ugly — should be a better way.  We need a char to
-    // get the strand, so we get the correct field as a `str` then
-    // use the chars iterator and get the first char.
-    let ori_str: char = mdata["expected_ori"]
-        .as_str()
-        .unwrap()
-        .chars()
-        .next()
-        .unwrap();
-    Strand::from_char(&ori_str)
-}
-
 #[derive(Debug)]
 enum FilterType {
     Filtered,
@@ -221,7 +206,7 @@ fn get_most_ambiguous_record(mdata: &serde_json::Value, log: &slog::Logger) -> u
 fn get_num_chunks(mdata: &serde_json::Value, log: &slog::Logger) -> anyhow::Result<u64> {
     if let Some(mar) = mdata.get("num-chunks") {
         match mar.as_u64() {
-            Some(mv) => Ok(mv as u64),
+            Some(mv) => Ok(mv),
             _ => Err(anyhow!("Error parsing num-chunks")),
         }
     } else {
@@ -391,7 +376,6 @@ where
 
     // create the prelude and rebind the variables we need
     let prelude = RadPrelude::from_header_and_tag_sections(hdr, fl_tags, rl_tags, al_tags);
-    let hdr = &prelude.hdr;
     let rl_tags = &prelude.read_tags;
 
     let file_tag_map = prelude.file_tags.parse_tags_from_bytes(&mut br);
@@ -460,7 +444,7 @@ where
     );
 
     let cc = chunk::ChunkConfigAtac {
-        num_chunks: num_chunks,
+        num_chunks,
         bc_type: libradicl::rad_types::encode_type_tag(bct).expect("valid barcode tag type"),
     };
 

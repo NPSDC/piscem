@@ -5,7 +5,7 @@ use bstr::io::BufReadExt;
 // use indexmap::map::IndexMap;
 use itertools::Itertools;
 use libradicl::exit_codes;
-use libradicl::rad_types::{self, RadType};
+use libradicl::rad_types;
 use libradicl::utils::has_data_left;
 use libradicl::BarcodeLookupMap;
 use libradicl::{
@@ -18,90 +18,13 @@ use serde::Serialize;
 use serde_json::json;
 use slog::crit;
 use slog::info;
-use std::cmp;
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufReader, Read};
 use std::io::{BufWriter, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Instant;
 
-#[derive(Debug, PartialEq, Eq, Copy, Clone)]
-pub struct hit_info {
-    chr: u32, // could be converted to u8, with a hashmap mapping u8 to chromosome name
-    start: u32,
-    end: u32,
-    barcode: needletail::bitkmer::BitKmerSeq, // rec_id: u64,
-}
-
-// pub fn write_bed(
-//     hit_info_vec: &[hit_info],
-//     bed_path: &Path,
-//     chr_map: &IndexMap<String, u32>,
-//     hm: &HashMap<u64, u64, ahash::RandomState>,
-//     rev: &bool,
-//     bc_len: &usize,
-// ) -> Result<(), Box<dyn std::error::Error>> {
-//     let mut writer = std::fs::File::create(bed_path)?;
-//     let keys: Vec<_> = chr_map.keys().cloned().collect();
-//     let chunk_size = if hit_info_vec.len() > 100000 {
-//         100000
-//     } else {
-//         hit_info_vec.len()
-//     };
-//     let mut chunk = 0;
-//     let mut s = "".to_string();
-//     for i in 0..hit_info_vec.len() {
-//         if chunk == chunk_size {
-//             chunk = 0;
-//             s = "".to_string();
-//         }
-//         let chr_val = keys[hit_info_vec[i].chr as usize].clone();
-//         let start = hit_info_vec[i].start;
-//         let end = hit_info_vec[i].end;
-//         let bc = hm.get(&hit_info_vec[i].barcode).unwrap();
-//         let bc_string = get_bc_string(bc, rev, bc_len);
-//         let s2 = [
-//             chr_val,
-//             start.to_string(),
-//             end.to_string(),
-//             bc_string,
-//             "1".to_string(),
-//         ]
-//         .join("\t");
-//         s.push_str(&s2);
-//         s.push('\n');
-//         if (chunk == chunk_size - 1) || (i == (hit_info_vec.len() - 1)) {
-//             // println!("{:?}", &s);
-//             writer.write_all(s.as_bytes()).unwrap();
-//         }
-//         chunk += 1;
-//     }
-//     Ok(())
-// }
-
-impl Ord for hit_info {
-    fn cmp(&self, other: &Self) -> cmp::Ordering {
-        if self.start != other.start {
-            self.start.cmp(&other.start)
-        } else if self.end != other.end {
-            self.end.cmp(&other.end)
-        } else {
-            self.barcode.cmp(&other.barcode)
-        }
-    }
-}
-impl PartialOrd for hit_info {
-    fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
-        if self.start != other.start {
-            Some(self.start.cmp(&other.start))
-        } else if self.end != other.end {
-            Some(self.end.cmp(&other.end))
-        } else {
-            Some(self.barcode.cmp(&other.barcode))
-        }
-    }
-}
 
 #[derive(Clone, Debug, Serialize)]
 pub enum CellFilterMethod {
@@ -400,53 +323,6 @@ fn process_unfiltered(
     Ok(num_corrected)
 }
 
-// pub fn update_hit_vec(
-//     hit: &String,
-//     hit_info_vec: &mut Vec<hit_info>,
-//     hist: &mut HashMap<u64, u64, ahash::RandomState>,
-//     chr_map: &mut IndexMap<String, u32>,
-//     chr_count: &mut u32,
-//     first_inst: &bool,
-//     num_hits: &mut u16,
-//     rc: &bool,
-// ) -> bool {
-//     if !first_inst {
-//         return false;
-//     }
-//     let split_line: Vec<String> = hit.split_whitespace().map(|s| s.to_string()).collect();
-//     *num_hits = split_line[4].parse::<u16>().unwrap();
-//     let bc = &split_line[3].as_bytes();
-//     let l = bc.len();
-//     let mut km: needletail::bitkmer::BitKmer =
-//         needletail::bitkmer::BitNuclKmer::new(&bc[..], l as u8, false)
-//             .next()
-//             .unwrap()
-//             .1;
-//     if *rc {
-//         km = needletail::bitkmer::reverse_complement(km);
-//     }
-//     if hist.contains_key(&km.0) {
-//         let chr_s = split_line[0].clone();
-//         let mut chr = *chr_count;
-//         if chr_map.contains_key(&chr_s) {
-//             chr = *chr_map.get(&chr_s).unwrap();
-//         } else {
-//             chr_map.insert(chr_s.clone(), chr);
-//             *chr_count += 1;
-//         }
-//         // only add if the kmer exists
-//         if *num_hits == 1 {
-//             hit_info_vec.push(hit_info {
-//                 chr: chr,
-//                 start: split_line[1].parse::<u32>().unwrap(),
-//                 end: split_line[2].parse::<u32>().unwrap(),
-//                 barcode: km.0,
-//             });
-//         }
-//         return true;
-//     }
-//     return false;
-// }
 
 pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> {
     let rad_dir = gpl_opts.input_dir;
@@ -511,22 +387,19 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
     info!(log, "read {:?} read-level tags", rl_tags.tags.len());
 
     const BNAME: &str = "barcode";
-    let mut bct: Option<RadType> = None;
+    // let mut bct: Option<RadType> = None;
 
-    for rt in &rl_tags.tags {
+    for rt in &rl_tags.tags  {
         // if this is one of our tags
-        if rt.name == BNAME {
-            if !rt.typeid.is_int_type() {
-                crit!(
-                    log,
-                    "currently only RAD types 1--4 are supported for 'b' tags."
-                );
-                std::process::exit(exit_codes::EXIT_UNSUPPORTED_TAG_TYPE);
-            }
-
-            if rt.name == BNAME {
-                bct = Some(rt.typeid);
-            }
+        if rt.name == BNAME  && !rt.typeid.is_int_type() {   
+            crit!(
+                log,
+                "currently only RAD types 1--4 are supported for 'b' tags."
+            );
+            std::process::exit(exit_codes::EXIT_UNSUPPORTED_TAG_TYPE);
+            // if rt.name == BNAME {
+            //     bct = Some(rt.typeid);
+            // }
         }
     }
 
@@ -539,10 +412,6 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
 
     let record_context = prelude.get_record_context::<AtacSeqRecordContext>()?;
     let mut num_reads: usize = 0;
-
-    // if dealing with filtered type
-    let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
-    // let mut hm: HashMap<u64, u64, ahash::RandomState> = HashMap::with_hasher(s);
 
     // if dealing with the unfiltered type
     // the set of barcodes that are not an exact match for any known barcodes

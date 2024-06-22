@@ -1,4 +1,4 @@
-use anyhow::{anyhow, bail};
+use anyhow::bail;
 use clap::{arg, builder::ArgGroup, crate_authors, crate_version, value_parser, Command};
 use itertools::Itertools;
 use slog::{crit, o, warn, Drain};
@@ -62,7 +62,7 @@ fn main() -> anyhow::Result<()> {
         .arg(arg!(-r --"rad-dir" <RADFILE> "the directory containing the RAD file to be collated")
             .required(true)
             .value_parser(pathbuf_directory_exists_validator))
-        .arg(arg!(-t --threads <THREADS> "number of threads to use for processing").value_parser(value_parser!(u32)).default_value(max_num_collate_threads.clone()))
+        .arg(arg!(-t --threads <THREADS> "number of threads to use for processing").value_parser(value_parser!(u32)).default_value(max_num_collate_threads))
         .arg(arg!(-c --compress "compress the output collated RAD file"))
         .arg(arg!(-m --"max-records" <MAXRECORDS> "the maximum number of read records to keep in memory at once")
              .value_parser(value_parser!(u32))
@@ -75,7 +75,7 @@ fn main() -> anyhow::Result<()> {
              .arg(arg!(-i --"input-dir" <INPUTDIR> "input directory made by generate-permit-list that also contains the output of collate")
                  .required(true)
                  .value_parser(pathbuf_directory_exists_validator))
-             .arg(arg!(-t --threads <THREADS> "number of threads to use for processing").value_parser(value_parser!(u32)).default_value(max_num_collate_threads))
+             .arg(arg!(-t --threads <THREADS> "number of threads to use for processing").value_parser(value_parser!(u32)).default_value(max_num_threads))
              .arg(
                 arg!(-r --"rev-comp" <REVERSECOMPLEMENT> "reverse complement")
                 .value_parser(clap::builder::BoolishValueParser::new())

@@ -1,24 +1,20 @@
 use crate::prog_opts::DeduplicateOpts;
-use anyhow::{anyhow, Context};
+use anyhow::Context;
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
-use libradicl::chunk::Chunk;
 use libradicl::{
-    header::RadPrelude,
     readers::ParallelRadReader,
-    record::{AtacSeqReadRecord, AtacSeqRecordContext},
-    utils,
+    record::AtacSeqReadRecord,
 };
 use num_format::ToFormattedString;
-use slog::{crit, info, warn};
+use slog::info;
 use std::cmp;
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{BufRead, BufReader, Read};
-use std::io::{BufWriter, Write};
+use std::io::BufReader;
+use std::io::Write;
 use std::num::NonZeroUsize;
-use std::path::{Path, PathBuf};
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic:: Ordering,
     Arc, Mutex,
 };
 use std::thread;
@@ -50,13 +46,7 @@ impl Ord for HitInfo {
 }
 impl PartialOrd for HitInfo {
     fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
-        if self.chr != other.chr {
-            Some(self.chr.cmp(&other.chr))
-        } else if self.start != other.start {
-            Some(self.start.cmp(&other.start))
-        } else {
-            Some(self.frag_len.cmp(&other.frag_len))
-        }
+        Some(self.cmp(other))
     }
 }
 
@@ -127,7 +117,7 @@ pub fn deduplicate(dedup_opts: DeduplicateOpts) -> anyhow::Result<()> {
 }
 
 pub fn do_deduplicate(
-    mut br: BufReader<File>,
+    br: BufReader<File>,
     dedup_opts: DeduplicateOpts,
     file_len: u64,
 ) -> anyhow::Result<()> {
@@ -161,7 +151,6 @@ pub fn do_deduplicate(
 
     let parent = std::path::Path::new(dedup_opts.input_dir);
     let bed_path = parent.join("map.bed");
-    let bed_file = File::create(&bed_path)?;
     let num_chunks = hdr.num_chunks;
 
     let bc_unmapped_file = File::open(parent.join("unmapped_bc_count_collated.bin")).unwrap();
@@ -185,8 +174,6 @@ pub fn do_deduplicate(
         .expect("tag map must contain cblen");
     let barcode_len: u16 = barcode_tag.try_into()?;
 
-    let record_context = prelude.get_record_context::<AtacSeqRecordContext>()?;
-
     let pbar = ProgressBar::with_draw_target(
         Some(num_chunks),
         ProgressDrawTarget::stderr_with_hz(5u8), // update at most 5 times/sec.
@@ -199,9 +186,6 @@ pub fn do_deduplicate(
             .expect("ProgressStyle template was invalid.")
             .progress_chars("╢▌▌░╟"),
     );
-
-    // the number of reference sequences
-    let ref_count = hdr.ref_count as u32;
 
     let bed_writer = Arc::new(Mutex::new(File::create(bed_path).unwrap()));
     let mut thread_handles: Vec<thread::JoinHandle<usize>> = Vec::with_capacity(n_workers);
@@ -224,7 +208,7 @@ pub fn do_deduplicate(
                         let mut hit_info_vec: Vec<HitInfo> = Vec::with_capacity(c.nrec as usize);
                         // println!("Chunk :: nbytes: {}, nrecs: {}", c.nbytes, c.nrec);
                         assert_eq!(c.nrec as usize, c.reads.len());
-                        for (_i, r) in c.reads.iter().enumerate() {
+                        for r in c.reads.iter() {
                             let na = r.refs.len();
                             // add a field tracking such counts
                             if na == 1 {
@@ -253,7 +237,7 @@ pub fn do_deduplicate(
         thread_handles.push(handle);
     }
     let header_offset = rad_reader.get_byte_offset();
-    let pbar = ProgressBar::new(file_len as u64 - header_offset);
+    let pbar = ProgressBar::new(file_len - header_offset);
     pbar.set_style(
         ProgressStyle::with_template(
             "[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}",
