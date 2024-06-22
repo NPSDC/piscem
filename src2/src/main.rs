@@ -10,7 +10,7 @@ use piscem_atac::cmd_parse_utils::{
 };
 use piscem_atac::collate::collate;
 use piscem_atac::deduplicate::deduplicate;
-use piscem_atac::prog_opts::{GenPermitListOpts,DeduplicateOpts};
+use piscem_atac::prog_opts::{DeduplicateOpts, GenPermitListOpts};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -75,8 +75,13 @@ fn main() -> anyhow::Result<()> {
              .arg(arg!(-i --"input-dir" <INPUTDIR> "input directory made by generate-permit-list that also contains the output of collate")
                  .required(true)
                  .value_parser(pathbuf_directory_exists_validator))
-             .arg(arg!(-t --threads <THREADS> "number of threads to use for processing").value_parser(value_parser!(u32)).default_value(max_num_collate_threads));
-            
+             .arg(arg!(-t --threads <THREADS> "number of threads to use for processing").value_parser(value_parser!(u32)).default_value(max_num_collate_threads))
+             .arg(
+                arg!(-r --"rev-comp" <REVERSECOMPLEMENT> "reverse complement")
+                .value_parser(clap::builder::BoolishValueParser::new())
+                .default_value("true")
+            );
+
 
     let opts = Command::new("piscem-atac")
         .subcommand_required(true)
@@ -164,10 +169,12 @@ fn main() -> anyhow::Result<()> {
     if let Some(t) = opts.subcommand_matches("deduplicate") {
         let input_dir: &PathBuf = t.get_one("input-dir").unwrap();
         let num_threads = *t.get_one("threads").unwrap();
+        let rc: bool = *t.get_one("rev-comp").expect("reverse comp must be boolean");
 
         let dedup_opts = DeduplicateOpts::builder()
             .input_dir(input_dir)
             .num_threads(num_threads)
+            .rev(rc)
             .cmdline(&cmdline)
             .version(version)
             .log(&log)

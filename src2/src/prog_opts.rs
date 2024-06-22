@@ -59,6 +59,7 @@ pub struct GenPermitListOpts<'a, 'b, 'c, 'd, 'e> {
 pub struct DeduplicateOpts<'a, 'b, 'c, 'd> {
     pub input_dir: &'a PathBuf,
     pub num_threads: u32,
+    pub rev: bool,
     pub cmdline: &'b str,
     pub version: &'c str,
     #[serde(skip_serializing)]

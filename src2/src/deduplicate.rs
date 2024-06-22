@@ -24,8 +24,8 @@ use std::sync::{
 use std::thread;
 pub type MetaChunk = (usize, usize, u32, u32, Vec<u8>);
 use crate::utils as af_utils;
-use num_format::Locale;
 use itertools::Itertools;
+use num_format::Locale;
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub struct HitInfo {
@@ -64,6 +64,8 @@ pub fn write_bed(
     bd_writer_lock: &Arc<Mutex<File>>,
     hit_info_vec: &[HitInfo],
     ref_names: &[String],
+    rev: bool,
+    bc_len: u8
 ) {
     let mut s = "".to_string();
     for i in 0..hit_info_vec.len() {
@@ -71,7 +73,7 @@ pub fn write_bed(
             ref_names[hit_info_vec[i].chr as usize].clone(),
             hit_info_vec[i].start.to_string(),
             (hit_info_vec[i].start + hit_info_vec[i].frag_len as u32).to_string(),
-            af_utils::get_bc_string(&hit_info_vec[i].barcode, false, 16 as u8),
+            af_utils::get_bc_string(&hit_info_vec[i].barcode, rev, bc_len),
             hit_info_vec[i].count.to_string(),
         ]
         .join("\t");
@@ -110,6 +112,8 @@ pub fn deduplicate(dedup_opts: DeduplicateOpts) -> anyhow::Result<()> {
     } else {
         let i_file =
             File::open(parent.join("map.collated.rad")).context("run collate before quant")?;
+        let metadata = i_file.metadata()?;
+        let file_len = metadata.len();
         let br = BufReader::new(i_file);
 
         info!(
@@ -118,13 +122,17 @@ pub fn deduplicate(dedup_opts: DeduplicateOpts) -> anyhow::Result<()> {
             parent.join("map.collated.rad")
         );
 
-        do_deduplicate(br, dedup_opts)
+        do_deduplicate(br, dedup_opts, file_len)
     }
 }
 
-pub fn do_deduplicate(mut br: BufReader<File>, dedup_opts: DeduplicateOpts) -> anyhow::Result<()> {
+pub fn do_deduplicate(
+    mut br: BufReader<File>,
+    dedup_opts: DeduplicateOpts,
+    file_len: u64,
+) -> anyhow::Result<()> {
     let num_threads = dedup_opts.num_threads;
-    
+
     let n_workers = if num_threads > 1 {
         (num_threads - 1) as usize
     } else {
@@ -213,61 +221,58 @@ pub fn do_deduplicate(mut br: BufReader<File>, dedup_opts: DeduplicateOpts) -> a
                 while let Some(meta_chunk) = q.pop() {
                     for c in meta_chunk.iter() {
                         nrec_processed += c.nrec as usize;
-                        let mut hit_info_vec:Vec<HitInfo> = Vec::with_capacity(c.nrec as usize);
+                        let mut hit_info_vec: Vec<HitInfo> = Vec::with_capacity(c.nrec as usize);
                         // println!("Chunk :: nbytes: {}, nrecs: {}", c.nbytes, c.nrec);
                         assert_eq!(c.nrec as usize, c.reads.len());
                         for (_i, r) in c.reads.iter().enumerate() {
                             let na = r.refs.len();
                             // add a field tracking such counts
                             if na == 1 {
-                                hit_info_vec.push(
-                                    HitInfo{
-                                        chr: r.refs[0],
-                                        start: r.start_pos[0],
-                                        frag_len: r.frag_lengths[0],
-                                        barcode: r.bc,
-                                        count: 0
-                                    }
-                                )
+                                hit_info_vec.push(HitInfo {
+                                    chr: r.refs[0],
+                                    start: r.start_pos[0],
+                                    frag_len: r.frag_lengths[0],
+                                    barcode: r.bc,
+                                    count: 0,
+                                })
                             }
                         }
                         hit_info_vec.sort_unstable();
-                        let mut h_updated:Vec<HitInfo> = Vec::with_capacity(hit_info_vec.len());
+                        let mut h_updated: Vec<HitInfo> = Vec::with_capacity(hit_info_vec.len());
                         for (count, hv) in hit_info_vec.iter_mut().dedup_with_count() {
                             hv.count = count as u16;
                             h_updated.push(*hv);
                         }
                         drop(hit_info_vec);
-                        write_bed(&bd, &h_updated, &refs);
+                        write_bed(&bd, &h_updated, &refs, dedup_opts.rev, barcode_len as u8);
                     }
                 }
             }
             nrec_processed
         });
         thread_handles.push(handle);
-
     }
-    // let header_offset = rad_reader.get_byte_offset();
-    // let pbar = ProgressBar::new(file_len - header_offset);
-    // pbar.set_style(
-    //     ProgressStyle::with_template(
-    //         "[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}",
-    //     )
-    //     .unwrap()
-    //     .progress_chars("##-"),
-    // );
-    // pbar.set_draw_target(ProgressDrawTarget::stderr_with_hz(5));
-    // let cb = |new_bytes: u64, _new_rec: u64| {
-    //     pbar.inc(new_bytes);
-    // };
-    let _ = rad_reader.start_chunk_parsing(libradicl::readers::EMPTY_METACHUNK_CALLBACK); //libradicl::readers::EMPTY_METACHUNK_CALLBACK);
+    let header_offset = rad_reader.get_byte_offset();
+    let pbar = ProgressBar::new(file_len as u64 - header_offset);
+    pbar.set_style(
+        ProgressStyle::with_template(
+            "[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}",
+        )
+        .unwrap()
+        .progress_chars("##-"),
+    );
+    pbar.set_draw_target(ProgressDrawTarget::stderr_with_hz(5));
+    let cb = |new_bytes: u64, _new_rec: u64| {
+        pbar.inc(new_bytes);
+    };
+    let _ = rad_reader.start_chunk_parsing(Some(cb)); //libradicl::readers::EMPTY_METACHUNK_CALLBACK);
     let mut total_processed = 0;
     for handle in thread_handles {
         total_processed += handle.join().expect("The parsing thread panicked");
     }
-    // pbar.finish_with_message(format!(
-    //     "finished parsing RAD file; processed {} total records\n",
-    //     total_processed
-    // ));
+    pbar.finish_with_message(format!(
+        "finished parsing RAD file; processed {} total records\n",
+        total_processed
+    ));
     Ok(())
 }
