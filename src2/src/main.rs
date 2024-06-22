@@ -9,7 +9,9 @@ use piscem_atac::cmd_parse_utils::{
     pathbuf_directory_exists_validator, pathbuf_file_exists_validator,
 };
 use piscem_atac::collate::collate;
-use piscem_atac::prog_opts::GenPermitListOpts;
+use piscem_atac::deduplicate::deduplicate;
+use piscem_atac::prog_opts::{GenPermitListOpts,DeduplicateOpts};
+
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn main() -> anyhow::Result<()> {
@@ -60,11 +62,21 @@ fn main() -> anyhow::Result<()> {
         .arg(arg!(-r --"rad-dir" <RADFILE> "the directory containing the RAD file to be collated")
             .required(true)
             .value_parser(pathbuf_directory_exists_validator))
-        .arg(arg!(-t --threads <THREADS> "number of threads to use for processing").value_parser(value_parser!(u32)).default_value(max_num_collate_threads))
+        .arg(arg!(-t --threads <THREADS> "number of threads to use for processing").value_parser(value_parser!(u32)).default_value(max_num_collate_threads.clone()))
         .arg(arg!(-c --compress "compress the output collated RAD file"))
         .arg(arg!(-m --"max-records" <MAXRECORDS> "the maximum number of read records to keep in memory at once")
              .value_parser(value_parser!(u32))
              .default_value("30000000"));
+
+    let deduplicate_app = Command::new("deduplicate")
+             .about("Collate a RAD file by corrected cell barcode")
+             .version(version)
+             .author(crate_authors)
+             .arg(arg!(-i --"input-dir" <INPUTDIR> "input directory made by generate-permit-list that also contains the output of collate")
+                 .required(true)
+                 .value_parser(pathbuf_directory_exists_validator))
+             .arg(arg!(-t --threads <THREADS> "number of threads to use for processing").value_parser(value_parser!(u32)).default_value(max_num_collate_threads));
+            
 
     let opts = Command::new("piscem-atac")
         .subcommand_required(true)
@@ -74,6 +86,7 @@ fn main() -> anyhow::Result<()> {
         .about("Process RAD files from the command line")
         .subcommand(gen_app)
         .subcommand(collate_app)
+        .subcommand(deduplicate_app)
         .get_matches();
 
     let decorator = slog_term::TermDecorator::new().build();
@@ -146,6 +159,37 @@ fn main() -> anyhow::Result<()> {
             &log,
         )
         .expect("could not collate.");
+    }
+
+    if let Some(t) = opts.subcommand_matches("deduplicate") {
+        let input_dir: &PathBuf = t.get_one("input-dir").unwrap();
+        let num_threads = *t.get_one("threads").unwrap();
+
+        let dedup_opts = DeduplicateOpts::builder()
+            .input_dir(input_dir)
+            .num_threads(num_threads)
+            .cmdline(&cmdline)
+            .version(version)
+            .log(&log)
+            .build();
+
+        let parent = std::path::Path::new(&input_dir);
+        let json_path = parent.join("generate_permit_list.json");
+        let col_json_path = parent.join("collate.json");
+
+        if json_path.exists() && col_json_path.exists() {
+            match deduplicate(dedup_opts) {
+                Ok(_) => {}
+                Err(_e) => {
+                    panic!("Could not dedupicate rad file");
+                }
+            };
+        } else {
+            crit!(log,
+                "The provided input directory lacks a generate_permit_list.json or collate.json file; this should not happen."
+            );
+            bail!("The provided input directory lacks a generate_permit_list.json or collate.json file; this should not happen.");
+        }
     }
     Ok(())
 }

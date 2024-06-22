@@ -54,3 +54,13 @@ pub struct GenPermitListOpts<'a, 'b, 'c, 'd, 'e> {
     #[serde(skip_serializing)]
     pub log: &'e slog::Logger,
 }
+
+#[derive(TypedBuilder, Debug, Serialize)]
+pub struct DeduplicateOpts<'a, 'b, 'c, 'd> {
+    pub input_dir: &'a PathBuf,
+    pub num_threads: u32,
+    pub cmdline: &'b str,
+    pub version: &'c str,
+    #[serde(skip_serializing)]
+    pub log: &'d slog::Logger,
+}

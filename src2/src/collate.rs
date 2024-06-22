@@ -222,7 +222,7 @@ fn get_num_chunks(mdata: &serde_json::Value, log: &slog::Logger) -> anyhow::Resu
     if let Some(mar) = mdata.get("num-chunks") {
         match mar.as_u64() {
             Some(mv) => Ok(mv as u64),
-            _ => Err(anyhow!("Error parsing num-chunks"))
+            _ => Err(anyhow!("Error parsing num-chunks")),
         }
     } else {
         info!(log, "num-chunks key not present in JSON file;");

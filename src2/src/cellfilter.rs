@@ -115,21 +115,6 @@ pub enum CellFilterMethod {
     UnfilteredExternalList(PathBuf, usize),
 }
 
-pub fn get_bc_string(
-    kmerseq: &needletail::bitkmer::BitKmerSeq,
-    reverse_barcode: &bool,
-    bc_len: &usize,
-) -> String {
-    let kmseq = *kmerseq;
-    let mut km: needletail::bitkmer::BitKmer = (kmseq, *bc_len as u8);
-    if *reverse_barcode {
-        km = needletail::bitkmer::reverse_complement(km);
-    }
-    let bytes = needletail::bitkmer::bitmer_to_bytes(km);
-    let seq: String = String::from_utf8(bytes).expect("Invalid barcode");
-    seq
-}
-
 pub fn update_barcode_hist_unfiltered(
     hist: &mut HashMap<u64, u64, ahash::RandomState>,
     unmatched_bc: &mut Vec<u64>,
