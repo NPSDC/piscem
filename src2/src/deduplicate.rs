@@ -16,6 +16,7 @@ use std::num::NonZeroUsize;
 use std::sync::{
     atomic:: Ordering,
     Arc, Mutex,
+    atomic::AtomicU32
 };
 use std::thread;
 pub type MetaChunk = (usize, usize, u32, u32, Vec<u8>);
@@ -55,20 +56,26 @@ pub fn write_bed(
     hit_info_vec: &[HitInfo],
     ref_names: &[String],
     rev: bool,
-    bc_len: u8
+    bc_len: u8,
+    count_frag: &Arc<AtomicU32>
 ) {
     let mut s = "".to_string();
     for i in 0..hit_info_vec.len() {
-        let s2 = [
-            ref_names[hit_info_vec[i].chr as usize].clone(),
-            hit_info_vec[i].start.to_string(),
-            (hit_info_vec[i].start + hit_info_vec[i].frag_len as u32).to_string(),
-            af_utils::get_bc_string(&hit_info_vec[i].barcode, rev, bc_len),
-            hit_info_vec[i].count.to_string(),
-        ]
-        .join("\t");
-        s.push_str(&s2);
-        s.push('\n');
+        if hit_info_vec[i].frag_len < 2000 {
+            let s2 = [
+                ref_names[hit_info_vec[i].chr as usize].clone(),
+                hit_info_vec[i].start.to_string(),
+                (hit_info_vec[i].start + hit_info_vec[i].frag_len as u32).to_string(),
+                af_utils::get_bc_string(&hit_info_vec[i].barcode, rev, bc_len),
+                hit_info_vec[i].count.to_string(),
+            ]
+            .join("\t");
+            s.push_str(&s2);
+            s.push('\n');
+        }
+        else {
+            count_frag.fetch_add(1, Ordering::SeqCst);
+        }
     }
 
     let bd_lock = bd_writer_lock.lock();
@@ -128,7 +135,7 @@ pub fn do_deduplicate(
     } else {
         1
     };
-    println!("num threads numwor {} {}", num_threads, n_workers);
+    
     let mut rad_reader = ParallelRadReader::<AtacSeqReadRecord, BufReader<File>>::new(
         br,
         NonZeroUsize::new(n_workers).unwrap(),
@@ -137,6 +144,11 @@ pub fn do_deduplicate(
     let log = dedup_opts.log;
     let prelude = &rad_reader.prelude;
     let hdr = &prelude.hdr;
+
+    let num_multimappings = Arc::new(AtomicU32::new(0 as u32));
+    let num_dedup = Arc::new(AtomicU32::new(0 as u32));
+    let num_frag_counts = Arc::new(AtomicU32::new(0 as u32)); // fragments larger than 2000
+    let num_non_mapped_pair = Arc::new(AtomicU32::new(0 as u32)); // fragments larger than 2000
 
     if let Ok(summary) = prelude.summary(None) {
         println!("{}", summary);
@@ -195,7 +207,10 @@ pub fn do_deduplicate(
         let q = rad_reader.get_queue();
         let bd = bed_writer.clone();
         let refs = refs.clone();
-        let log = log.clone();
+        let num_multimappings = num_multimappings.clone();
+        let num_dedup = num_dedup.clone();
+        let num_frag_counts = num_frag_counts.clone();
+        let num_non_mapped_pair = num_non_mapped_pair.clone();
 
         let unmapped_count = bc_unmapped_map.clone();
 
@@ -211,7 +226,7 @@ pub fn do_deduplicate(
                         for r in c.reads.iter() {
                             let na = r.refs.len();
                             // add a field tracking such counts
-                            if na == 1 {
+                            if na == 1 && r.map_type[0] == 4 {
                                 hit_info_vec.push(HitInfo {
                                     chr: r.refs[0],
                                     start: r.start_pos[0],
@@ -220,15 +235,25 @@ pub fn do_deduplicate(
                                     count: 0,
                                 })
                             }
+                            else if na > 1 {
+                                num_multimappings.fetch_add(1, Ordering::SeqCst);
+                                continue;
+                            }
+                            else {
+                                num_non_mapped_pair.fetch_add(1, Ordering::SeqCst);
+                            }
                         }
                         hit_info_vec.sort_unstable();
                         let mut h_updated: Vec<HitInfo> = Vec::with_capacity(hit_info_vec.len());
                         for (count, hv) in hit_info_vec.iter_mut().dedup_with_count() {
                             hv.count = count as u16;
                             h_updated.push(*hv);
+                            if count > 1 {
+                                num_dedup.fetch_add(1, Ordering::SeqCst);
+                            }
                         }
                         drop(hit_info_vec);
-                        write_bed(&bd, &h_updated, &refs, dedup_opts.rev, barcode_len as u8);
+                        write_bed(&bd, &h_updated, &refs, dedup_opts.rev, barcode_len as u8, &num_frag_counts);
                     }
                 }
             }
@@ -258,5 +283,21 @@ pub fn do_deduplicate(
         "finished parsing RAD file; processed {} total records\n",
         total_processed
     ));
+    info!(
+        log,
+        "Number of records with greater than 1 mapping {}", num_multimappings.load(Ordering::SeqCst)
+        );
+    info!(
+        log,
+        "Number of records that are deduplicated {}", num_dedup.load(Ordering::SeqCst)
+        );
+    info!(
+        log,
+        "Number of records that are not mapped pairs {}", num_non_mapped_pair.load(Ordering::SeqCst)
+        );
+    info!(
+        log,
+        "Number of records that have frag length > 2000 {}", num_frag_counts.load(Ordering::SeqCst)
+        );
     Ok(())
 }
