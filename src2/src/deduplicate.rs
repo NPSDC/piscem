@@ -36,13 +36,17 @@ pub struct HitInfo {
 
 impl Ord for HitInfo {
     fn cmp(&self, other: &Self) -> cmp::Ordering {
-        if self.chr != other.chr {
-            self.chr.cmp(&other.chr)
-        } else if self.start != other.start {
+        // if self.chr != other.chr {
+        //     self.chr.cmp(&other.chr)
+        // } else if self.start != other.start {
+        if self.start != other.start {
             self.start.cmp(&other.start)
+        } else if (self.frag_len as u32 + self.start) != (other.frag_len as u32 + other.start) {
+            (self.frag_len as u32 + self.start).cmp(&(other.frag_len as u32 + other.start))
         } else {
-            self.frag_len.cmp(&other.frag_len)
+            self.barcode.cmp(&other.barcode)
         }
+
     }
 }
 impl PartialOrd for HitInfo {
@@ -148,8 +152,11 @@ pub fn do_deduplicate(
     let num_multimappings = Arc::new(AtomicU32::new(0 as u32));
     let num_dedup = Arc::new(AtomicU32::new(0 as u32));
     let num_frag_counts = Arc::new(AtomicU32::new(0 as u32)); // fragments larger than 2000
-    let num_non_mapped_pair = Arc::new(AtomicU32::new(0 as u32)); // fragments larger than 2000
-
+    let num_non_mapped_pair = Arc::new(AtomicU32::new(0 as u32));
+    let hit_info_count = Arc::new(AtomicU32::new(0 as u32));
+    let mut count_dedup  = Arc::new(AtomicU32::new(0 as u32));
+    let mut max_count_dedup  = Arc::new(AtomicU32::new(0 as u32));
+    
     if let Ok(summary) = prelude.summary(None) {
         println!("{}", summary);
     }
@@ -208,11 +215,16 @@ pub fn do_deduplicate(
         let bd = bed_writer.clone();
         let refs = refs.clone();
         let num_multimappings = num_multimappings.clone();
+        let hit_info_count = hit_info_count.clone();
         let num_dedup = num_dedup.clone();
         let num_frag_counts = num_frag_counts.clone();
         let num_non_mapped_pair = num_non_mapped_pair.clone();
 
         let unmapped_count = bc_unmapped_map.clone();
+        let hit_info_count = hit_info_count.clone();
+
+        let count_dedup = count_dedup.clone();
+        let max_count_dedup = max_count_dedup.clone();
 
         let handle = std::thread::spawn(move || {
             let mut nrec_processed = 0_usize;
@@ -226,14 +238,15 @@ pub fn do_deduplicate(
                         for r in c.reads.iter() {
                             let na = r.refs.len();
                             // add a field tracking such counts
-                            if na == 1 && r.map_type[0] == 4 {
+                            if na == 1 {
                                 hit_info_vec.push(HitInfo {
                                     chr: r.refs[0],
                                     start: r.start_pos[0],
                                     frag_len: r.frag_lengths[0],
                                     barcode: r.bc,
                                     count: 0,
-                                })
+                                });
+                                hit_info_count.fetch_add(1, Ordering::SeqCst);
                             }
                             else if na > 1 {
                                 num_multimappings.fetch_add(1, Ordering::SeqCst);
@@ -244,15 +257,19 @@ pub fn do_deduplicate(
                             }
                         }
                         hit_info_vec.sort_unstable();
-                        let mut h_updated: Vec<HitInfo> = Vec::with_capacity(hit_info_vec.len());
+                        let mut h_updated: Vec<HitInfo> = Vec::with_capacity(hit_info_vec.len()/2);
                         for (count, hv) in hit_info_vec.iter_mut().dedup_with_count() {
                             hv.count = count as u16;
                             h_updated.push(*hv);
+                            count_dedup.fetch_add(count as u32, Ordering::SeqCst);
                             if count > 1 {
                                 num_dedup.fetch_add(1, Ordering::SeqCst);
                             }
+                            if count > 1 && count < 5 {
+                                max_count_dedup.fetch_add(count as u32, Ordering::SeqCst);
+                            }
                         }
-                        drop(hit_info_vec);
+                        // drop(hit_info_vec);
                         write_bed(&bd, &h_updated, &refs, dedup_opts.rev, barcode_len as u8, &num_frag_counts);
                     }
                 }
@@ -298,6 +315,18 @@ pub fn do_deduplicate(
     info!(
         log,
         "Number of records that have frag length > 2000 {}", num_frag_counts.load(Ordering::SeqCst)
+        );
+    info!(
+        log,
+        "hit info count {}", hit_info_count.load(Ordering::SeqCst)
+        );
+    info!(
+        log,
+        "count_dedup {}", count_dedup.load(Ordering::SeqCst)
+        );
+    info!(
+        log,
+        "max count {}", max_count_dedup.load(Ordering::SeqCst)
         );
     Ok(())
 }
